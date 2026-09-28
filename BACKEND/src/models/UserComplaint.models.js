@@ -1,0 +1,127 @@
+import mongoose from "mongoose";
+
+const userComplaintSchema = new mongoose.Schema({
+  // Strict Workspace Boundary
+  adminId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Admin",
+    required: true,
+    index: true // For fast querying on the Admin Dashboard
+  },
+  title: {
+    type: String,
+    required: true,
+  },
+  description: {
+    type: String,
+    required: true,
+  },
+  category: {
+    type: String,
+    required: true, 
+  },
+  status: {
+    type: String,
+    enum: ["pending", "in-progress", "resolved", "rejected"],
+    default: "pending",
+  },
+  priority: {
+    type: String,
+    enum: ["low", "medium", "high", "critical"],
+    default: "medium",
+  },
+  autoPriorityAssigned: {
+    type: Boolean,
+    default: false,
+  },
+  manualPriorityOverridden: {
+    type: Boolean,
+    default: false,
+  },
+  priorityOverriddenAt: {
+    type: Date,
+    default: null,
+  },
+  priorityOverriddenById: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Admin",
+    default: null,
+  },
+  location: {
+    latitude: Number,
+    longitude: Number,
+    address: String,
+  },
+  images: [
+    {
+      type: String,
+    },
+  ],
+  user: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "User",
+    required: true,
+  },
+  voteCount: {
+    type: Number,
+    default: 0,
+  },
+  voters: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+  ],
+  department: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Department",
+  },
+  assignedTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Staff", 
+  },
+  // Comments / discussion thread on a complaint.
+  // Supports comments from the reporting user, staff, and admin.
+  // `authorRole` tells the frontend which of the three ref fields below is populated,
+  // so it doesn't have to guess based on which field happens to be set.
+  comments: [
+    {
+      authorRole: {
+        type: String,
+        enum: ["user", "staff", "admin"],
+        required: true,
+        default: "staff", // Legacy comments created before this field existed were all staff/admin notes
+      },
+      user: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      staff: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Staff",
+      },
+      admin: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Admin",
+      },
+      message: {
+        type: String,
+        required: true,
+        trim: true,
+      },
+      createdAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+  // Added to track exactly when a staff member finishes the job!
+  resolvedAt: {
+    type: Date,
+    default: null,
+  }
+}, { timestamps: true });
+
+userComplaintSchema.index({"location.latitude":1,"location.longitude":1});
+
+export default mongoose.model("UserComplaint", userComplaintSchema);
