@@ -1,0 +1,20 @@
+import express from 'express';
+import {
+  getUserNotifications,
+  markAsRead,
+  markAllAsRead,
+  deleteNotification,
+  clearAllNotifications
+} from '../controllers/notification.controllers.js';
+import { chatAuth } from '../middleware/chatAuth.js';
+
+const router = express.Router();
+router.use(chatAuth);
+
+router.get('/:userId', getUserNotifications);
+router.patch('/:id/read', markAsRead);
+router.patch('/:userId/read-all', markAllAsRead);
+router.delete('/:id', deleteNotification);
+router.delete('/:userId/clear-all', clearAllNotifications);
+
+export default router;
