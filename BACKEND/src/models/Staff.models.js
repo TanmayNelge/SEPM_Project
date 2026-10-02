@@ -1,71 +1,83 @@
 import mongoose from "mongoose";
-import bcrypt from "bcryptjs"; // Added missing import!
+import bcrypt from "bcryptjs";
 
 const staffSchema = new mongoose.Schema({
-    adminId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Admin",
-        required: true
-    },
-    isApproved: {
-        type: Boolean,
-        default: false // Security measure: Admin must approve them before they can login
-    },
-    name: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    email: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true
-    },
-    staffId: {
-        type: String,
-        required: true, 
-        unique: true,
-        trim: true
-    },
-    phone: {
-        type: String,
-        match: /^[0-9]{10}$/
-    },
-    password: {
-        type: String,
-        required: true
-    },
-    department: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Department",
-        required: true // Making this required so load-balancer always knows where they belong
-    },
-    profileImage: {
-        type: String
-    },
-    isActive: {
-        type: Boolean,
-        default: true
-    }
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 100,
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    maxlength: 254,
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 8,
+    select: false,
+  },
+  phone: {
+    type: String,
+    required: true,
+    trim: true,
+  },
+  staffId: {
+    type: String,
+    required: true,
+    unique: true,
+    trim: true,
+    maxlength: 40,
+  },
+  adminId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Admin",
+    required: true,
+    index: true,
+  },
+  department: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Department",
+    default: null,
+  },
+  role: {
+    type: String,
+    enum: ["staff"],
+    default: "staff",
+  },
+  isActive: {
+    type: Boolean,
+    default: true,
+  },
+  isApproved: {
+    type: Boolean,
+    default: false,
+  },
+  isVerified: {
+    type: Boolean,
+    default: false,
+  },
+  profileImage: {
+    type: String,
+    default: "",
+  },
 }, { timestamps: true });
 
-// Hash password before saving
-staffSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) return next();
-    
-    try {
-        const salt = await bcrypt.genSalt(10);
-        this.password = await bcrypt.hash(this.password, salt);
-        next();
-    } catch (error) {
-        next(error);
-    }
+staffSchema.index({ adminId: 1, isActive: 1 });
+
+staffSchema.pre("save", async function () {
+  if (this.isModified("password")) {
+    this.password = await bcrypt.hash(this.password, 10);
+  }
 });
 
-// Method to compare passwords
-staffSchema.methods.comparePassword = async function(candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
+staffSchema.methods.comparePassword = function (candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
-export default mongoose.model("Staff", staffSchema);
+export default mongoose.models.Staff || mongoose.model("Staff", staffSchema);

@@ -1,43 +1,28 @@
 import jwt from "jsonwebtoken";
 import Admin from "../models/Admin.models.js";
-import { auth } from "./auth.js";
 
-export const adminAuth=async(req,res,next)=>{
-    try{
-        const authHeader=req.header("Authorization");
-        if(!authHeader || !authHeader.startsWith("Bearer ")){
-            return res.status(401).json({
-                success:false,
-                message:"Access denied. No token provided."
-            });
-        }
+export const adminAuth = async (req, res, next) => {
+  try {
+    const authorization = req.header("Authorization");
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice(7) : null;
 
-        const token=authHeader.replace("Bearer ","");
-        const decoded=jwt.verify(token,process.env.ACCESS_TOKEN_SECRET);
-
-        const admin=await Admin.findById(decoded.id).select("-password");
-
-        if(!admin){
-            return res.status(401).json({
-                success:false,
-                message:"Invalid token. Admin not found."
-            });
-        }
-
-        if(admin.role !== "admin"){
-            return res.status(403).json({
-                success:false,
-                message:"Access denied. You are not an admin."
-            });
-        }
-        req.admin=admin;
-        next();
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Authentication required" });
     }
-    catch(error){
-        console.error("Admin auth error:",error);
-        res.status(401).json({
-            success:false,
-            message:"Unauthorized access."
-        });
+
+    const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    const admin = await Admin.findById(decoded.id).select("-password");
+
+    if (!admin) {
+      return res.status(401).json({ success: false, message: "Invalid admin session" });
     }
+
+    req.admin = admin;
+    return next();
+  } catch (error) {
+    if (error.name === "JsonWebTokenError" || error.name === "TokenExpiredError") {
+      return res.status(401).json({ success: false, message: "Invalid or expired token" });
+    }
+    return next(error);
+  }
 };

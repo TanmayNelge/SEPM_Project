@@ -1,77 +1,79 @@
-import mongoose from "mongoose";
 import crypto from "crypto";
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
 const adminSchema = new mongoose.Schema({
-    organizationName: {
-        type: String,
-        required: true,
-        trim: true
-    },
-    workspaceCode: {
-        type: String,
-        unique: true,
-        uppercase: true,
-        index: true // Indexed for fast lookups when users/staff join
-    },
-    name: {
-        type: String,
-        required: true
-    },
-    email: {
-        type: String,
-        required: true,
-        unique: true,
-        lowercase: true
-    },
-    phone: {
-        type: String,
-        match: /^[0-9]{10}$/
-    },
-    password: {
-        type: String,
-        required: true
-    },
-    role: {
-        type: String,
-        enum: ["admin"],
-        default: "admin"
-    },
-    profileImage: {
-        type: String
-    },
-    permissions: {
-        canAssign: { type: Boolean, default: true },
-        canResolve: { type: Boolean, default: true },
-        canDelete: { type: Boolean, default: false }
-    }
-}, { timestamps: true }); 
+  organizationName: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 120,
+  },
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 100,
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true,
+    lowercase: true,
+    trim: true,
+    maxlength: 254,
+  },
+  password: {
+    type: String,
+    required: true,
+    minlength: 8,
+    select: false,
+  },
+  phone: {
+    type: String,
+    trim: true,
+    default: "",
+  },
+  workspaceCode: {
+    type: String,
+    required: true,
+    unique: true,
+    uppercase: true,
+    trim: true,
+  },
+  role: {
+    type: String,
+    enum: ["admin"],
+    default: "admin",
+  },
+  permissions: {
+    type: [String],
+    default: [],
+  },
+  profileImage: {
+    type: String,
+    default: "",
+  },
+  isVerified: {
+    type: Boolean,
+    default: false,
+  },
+}, { timestamps: true });
 
-// Auto-generate a 6-character alphanumeric workspace code before saving a new Admin
-adminSchema.pre('save', function(next) {
-    if (this.isNew && !this.workspaceCode) {
-        // Generates a random 6-character hex string, converts to uppercase
-        this.workspaceCode = crypto.randomBytes(3).toString('hex').toUpperCase();
-    }
-    next();
+adminSchema.pre("validate", function () {
+  if (!this.workspaceCode) {
+    this.workspaceCode = `WRK-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+  }
 });
 
-// Hash password before saving (same pattern as User/Staff models)
-adminSchema.pre('save', async function(next) {
-    if (!this.isModified('password')) return next();
-
-    try {
-        const salt = await bcrypt.genSalt(10);
-        this.password = await bcrypt.hash(this.password, salt);
-        next();
-    } catch (error) {
-        next(error);
-    }
+adminSchema.pre("save", async function () {
+  if (this.isModified("password")) {
+    this.password = await bcrypt.hash(this.password, 10);
+  }
 });
 
-// Method to compare passwords
-adminSchema.methods.comparePassword = async function(candidatePassword) {
-    return await bcrypt.compare(candidatePassword, this.password);
+adminSchema.methods.comparePassword = function (candidatePassword) {
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
-export default mongoose.model("Admin", adminSchema);
+export default mongoose.models.Admin || mongoose.model("Admin", adminSchema);
