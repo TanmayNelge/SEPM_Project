@@ -1,0 +1,1092 @@
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { motion } from "framer-motion";
+import {
+  ArrowLeft,
+  Upload,
+  MapPin,
+  Camera,
+  AlertCircle,
+  CheckCircle,
+  XCircle,
+  Loader2,
+  ThumbsUp,
+  Map as MapIcon,
+  Navigation,
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import axiosInstance from "../../api/axios";
+import complaintService from "../../services/complaintService";
+import departmentService from "../../services/departmentService";
+import DuplicateWarningModal from "./DuplicateWarningModal";
+
+const RaiseComplaint = () => {
+  const navigate = useNavigate();
+  const mapRef = useRef(null);
+  const markerRef = useRef(null);
+
+  const [loading, setLoading] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error, setError] = useState("");
+  const [showDuplicateModal, setShowDuplicateModal] = useState(false);
+  const [duplicateComplaints, setDuplicateComplaints] = useState([]);
+
+  // Department states
+  const [departments, setDepartments] = useState([]);
+  const [departmentsLoading, setDepartmentsLoading] = useState(true);
+
+  // Map states
+  const [showMap, setShowMap] = useState(false);
+  const [map, setMap] = useState(null);
+
+  const [formData, setFormData] = useState({
+    title: "",
+    category: "",
+    description: "",
+    location: {
+      address: "",
+      latitude: null,
+      longitude: null,
+    },
+    images: [],
+  });
+  const [locationLoading, setLocationLoading] = useState(false);
+
+  // Load Leaflet dynamically and get user location
+  useEffect(() => {
+    if (!showMap) return;
+    const doInit = () => {
+      // Try to get user's real GPS location first
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => initializeMap(pos.coords.latitude, pos.coords.longitude),
+          () => initializeMap(null, null), // fallback if denied
+          { timeout: 5000 }
+        );
+      } else {
+        initializeMap(null, null);
+      }
+    };
+
+    if (!window.L) {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+      document.head.appendChild(link);
+      const script = document.createElement("script");
+      script.src = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+      script.onload = doInit;
+      document.body.appendChild(script);
+    } else if (!map) {
+      doInit();
+    }
+  }, [showMap]);
+
+  const pinIcon = () => window.L.divIcon({
+    className: '',
+    html: `<svg viewBox="0 0 24 36" xmlns="http://www.w3.org/2000/svg" style="width:28px;height:40px;filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45))"><path d="M12 0C7.58 0 4 3.58 4 8c0 5.25 8 20 8 20s8-14.75 8-20c0-4.42-3.58-8-8-8z" fill="#EF4444"/><circle cx="12" cy="8" r="3.5" fill="white"/></svg>`,
+    iconSize: [28, 40],
+    iconAnchor: [14, 40],
+    popupAnchor: [0, -40],
+  });
+
+  // Prevent browser zoom when using trackpad/mouse over map
+  const trapMapWheel = (container) => {
+    if (!container) return;
+    container.addEventListener('wheel', (e) => {
+      e.stopPropagation();
+    }, { passive: false });
+    container.addEventListener('touchstart', (e) => {
+      if (e.touches.length > 1) e.stopPropagation();
+    }, { passive: false });
+  };
+
+  const initializeMap = (userLat, userLng) => {
+    if (!window.L || !mapRef.current || map) return;
+    trapMapWheel(mapRef.current);
+
+    const lat = formData.location.latitude || userLat || 20.5937;
+    const lng = formData.location.longitude || userLng || 78.9629;
+    const zoom = userLat ? 15 : 5;
+
+    const newMap = window.L.map(mapRef.current, { scrollWheelZoom: true }).setView([lat, lng], zoom);
+
+    window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: "© OpenStreetMap contributors",
+      maxZoom: 19,
+    }).addTo(newMap);
+
+    const icon = pinIcon();
+    newMap.on("click", (e) => handleMapClick(e, newMap, icon));
+
+    // Place marker at existing location or user GPS
+    const markerLat = formData.location.latitude || userLat;
+    const markerLng = formData.location.longitude || userLng;
+    if (markerLat && markerLng) {
+      const marker = window.L.marker([markerLat, markerLng], { icon }).addTo(newMap);
+      markerRef.current = marker;
+    }
+
+    setMap(newMap);
+  };
+
+  const handleMapClick = useCallback(
+    async (e, activeMap, icon) => {
+      const { lat, lng } = e.latlng;
+
+      // Update or create pin marker
+      if (markerRef.current) {
+        markerRef.current.setLatLng([lat, lng]);
+      } else if (window.L && (activeMap || map)) {
+        const targetMap = activeMap || map;
+        const markerIcon = icon || (window.L ? pinIcon() : undefined);
+        const marker = markerIcon
+          ? window.L.marker([lat, lng], { icon: markerIcon }).addTo(targetMap)
+          : window.L.marker([lat, lng]).addTo(targetMap);
+        markerRef.current = marker;
+      }
+
+      // Reverse geocode
+      try {
+        const response = await fetch(
+          `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`,
+        );
+
+        if (response.ok) {
+          const data = await response.json();
+          const address = data.locality
+            ? `${data.locality}, ${data.principalSubdivision}, ${data.countryName}`
+            : `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+
+          setFormData((prev) => ({
+            ...prev,
+            location: {
+              address,
+              latitude: lat,
+              longitude: lng,
+            },
+          }));
+        }
+      } catch (error) {
+        console.error("Geocoding error:", error);
+        setFormData((prev) => ({
+          ...prev,
+          location: {
+            address: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+            latitude: lat,
+            longitude: lng,
+          },
+        }));
+      }
+    },
+    [map],
+  );
+
+  // Fetch departments on mount
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchDepartments = async () => {
+      try {
+        setDepartmentsLoading(true);
+        setError("");
+
+        // FIX: Get workspace directly from localStorage each time
+        // Don't rely on state or props that might be stale
+        const workspaceStr = localStorage.getItem("currentWorkspace");
+        console.log("Raw workspace from localStorage:", workspaceStr);
+
+        if (!workspaceStr) {
+          if (isMounted) {
+            setError("Please select a workspace first.");
+            setDepartments([]);
+          }
+          return;
+        }
+
+        let currentWorkspace;
+        try {
+          currentWorkspace = JSON.parse(workspaceStr);
+        } catch (e) {
+          console.error("Failed to parse workspace:", e);
+          localStorage.removeItem("currentWorkspace"); // Clear corrupted data
+          if (isMounted) {
+            setError(
+              "Invalid workspace data. Please select your workspace again.",
+            );
+            setDepartments([]);
+          }
+          return;
+        }
+
+        console.log("Parsed workspace:", currentWorkspace);
+
+        // FIX: Check for BOTH possible property names
+        const workspaceCode =
+          currentWorkspace.workspaceCode || currentWorkspace.code;
+
+        if (!workspaceCode) {
+          console.error("No workspace code found in:", currentWorkspace);
+          // Try to fix the workspace data if it has 'code' property
+          if (currentWorkspace.code) {
+            const fixedWorkspace = {
+              ...currentWorkspace,
+              workspaceCode: currentWorkspace.code,
+            };
+            localStorage.setItem(
+              "currentWorkspace",
+              JSON.stringify(fixedWorkspace),
+            );
+            console.log("Fixed workspace data, retrying...");
+            // Retry with fixed data
+            setTimeout(() => {
+              if (isMounted) {
+                fetchDepartments();
+              }
+            }, 100);
+            return;
+          }
+
+          if (isMounted) {
+            setError(
+              "Invalid workspace data. Please select your workspace again.",
+            );
+            setDepartments([]);
+          }
+          return;
+        }
+
+        console.log(
+          " Fetching departments for workspace code:",
+          workspaceCode,
+        );
+
+        // FIX: Add timeout to prevent hanging
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response =
+          await departmentService.getDepartmentsByWorkspaceCode(workspaceCode);
+
+        clearTimeout(timeoutId);
+
+        console.log("Departments API response:", response);
+
+        if (isMounted) {
+          if (response && response.success) {
+            const departmentsData = response.data || [];
+            console.log("Departments received:", departmentsData);
+
+            if (departmentsData.length > 0) {
+              setDepartments(departmentsData);
+              setFormData((prev) => ({
+                ...prev,
+                department: departmentsData[0]._id,
+                category: departmentsData[0].name, // Make sure this is set
+              }));
+              setError("");
+            } else {
+              // No departments found - this is a valid state
+              setDepartments([]);
+              setError("No departments found in this workspace.");
+            }
+          } else {
+            setError("Failed to load departments from server.");
+            setDepartments([]);
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching departments:", error);
+        if (isMounted) {
+          if (error.name === "AbortError") {
+            setError("Request timeout. Please try again.");
+          } else {
+            setError("Error loading departments. Please try again.");
+          }
+          setDepartments([]);
+        }
+      } finally {
+        if (isMounted) {
+          setDepartmentsLoading(false);
+        }
+      }
+    };
+
+    fetchDepartments();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const getCurrentLocation = () => {
+    setLocationLoading(true);
+    setError("");
+
+    if (!navigator.geolocation) {
+      setError("Geolocation is not supported by your browser");
+      setLocationLoading(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+
+        // Update map if it exists
+        if (map) {
+          map.setView([latitude, longitude], 15);
+          if (markerRef.current) {
+            markerRef.current.setLatLng([latitude, longitude]);
+          } else if (window.L) {
+            const marker = window.L.marker([latitude, longitude]).addTo(map);
+            markerRef.current = marker;
+          }
+        }
+
+        try {
+          const response = await fetch(
+            `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${latitude}&longitude=${longitude}&localityLanguage=en`,
+          );
+
+          if (response.ok) {
+            const data = await response.json();
+            const address = data.locality
+              ? `${data.locality}, ${data.principalSubdivision}, ${data.countryName}`
+              : `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+
+            setFormData((prev) => ({
+              ...prev,
+              location: {
+                address,
+                latitude,
+                longitude,
+              },
+            }));
+          } else {
+            setFormData((prev) => ({
+              ...prev,
+              location: {
+                address: `Lat: ${latitude.toFixed(6)}, Lon: ${longitude.toFixed(6)}`,
+                latitude,
+                longitude,
+              },
+            }));
+          }
+        } catch (error) {
+          console.error("Geocoding error:", error);
+          setFormData((prev) => ({
+            ...prev,
+            location: {
+              address: `Lat: ${latitude.toFixed(6)}, Lon: ${longitude.toFixed(6)}`,
+              latitude,
+              longitude,
+            },
+          }));
+        } finally {
+          setLocationLoading(false);
+        }
+      },
+      (error) => {
+        console.error("Geolocation error:", error);
+        setError(
+          "Could not get your location. Please use the map or enter address manually.",
+        );
+        setLocationLoading(false);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      },
+    );
+  };
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+
+    // If this is the department select, also update category with the department name
+    if (name === "department") {
+      // Find the selected department to get its name
+      const selectedDept = departments.find((dept) => dept._id === value);
+      setFormData((prev) => ({
+        ...prev,
+        department: value, // Store the department ID
+        category: selectedDept ? selectedDept.name : value, // Store department name in category
+      }));
+    } else {
+      setFormData((prev) => ({
+        ...prev,
+        [name]: value,
+      }));
+    }
+  };
+
+  const handleLocationChange = (e) => {
+    const address = e.target.value;
+    setFormData((prev) => ({
+      ...prev,
+      location: {
+        ...prev.location,
+        address: address,
+      },
+    }));
+  };
+
+  const MAX_IMAGES = 5;
+
+  const handleImageUpload = (e) => {
+    const selectedFiles = Array.from(e.target.files || []);
+    if (selectedFiles.length === 0) return;
+
+    const oversized = selectedFiles.filter((f) => f.size > 5 * 1024 * 1024);
+    if (oversized.length > 0) {
+      setError(
+        `${oversized.length > 1 ? "Some images" : "Image"} exceed${
+          oversized.length > 1 ? "" : "s"
+        } the 5MB size limit`
+      );
+    }
+
+    const validFiles = selectedFiles.filter((f) => f.size <= 5 * 1024 * 1024);
+
+    setFormData((prev) => {
+      const combined = [...prev.images, ...validFiles];
+      if (combined.length > MAX_IMAGES) {
+        setError(`You can upload up to ${MAX_IMAGES} photos only`);
+      }
+      return { ...prev, images: combined.slice(0, MAX_IMAGES) };
+    });
+
+    // Allow re-selecting the same file(s) again later
+    e.target.value = "";
+  };
+
+  const removeImageAt = (index) => {
+    setFormData((prev) => ({
+      ...prev,
+      images: prev.images.filter((_, i) => i !== index),
+    }));
+  };
+
+const checkForDuplicates = async () => {
+  try {
+    const token = localStorage.getItem("accessToken");
+    if (!token) {
+      setError("Please login to submit complaint");
+      return false;
+    }
+
+    const user = JSON.parse(localStorage.getItem("user"));
+    if (!user) {
+      setError("User data not found. Please login again.");
+      return false;
+    }
+
+    const currentWorkspace = JSON.parse(
+      localStorage.getItem("currentWorkspace"),
+    );
+    if (!currentWorkspace) {
+      setError("Please select a workspace before submitting a complaint");
+      return false;
+    }
+
+    if (
+      !formData.location.address ||
+      formData.location.address.trim() === ""
+    ) {
+      setError("Please provide a location for the complaint");
+      return false;
+    }
+
+    // Only check duplicates if we have coordinates
+    if (formData.location.latitude && formData.location.longitude) {
+      const checkData = {
+        title: formData.title.trim(),
+        category: formData.category,
+        description: formData.description.trim(),
+        location: {
+          address: formData.location.address,
+          latitude: formData.location.latitude,
+          longitude: formData.location.longitude,
+        },
+        workspaceId: currentWorkspace.id,
+      };
+
+      console.log("Checking for duplicates with:", checkData);
+
+      try {
+        const response = await complaintService.checkDuplicate(checkData);
+        
+        if (response.success && response.hasDuplicates) {
+          console.log("Found similar complaints:", response.duplicates);
+          setDuplicateComplaints(response.duplicates);
+          setShowDuplicateModal(true);
+          return false;
+        }
+      } catch (error) {
+        // If duplicate check fails (500 error), log it but allow submission
+        console.error("Duplicate check failed (server error), proceeding with submission:", error);
+        // Don't set error here, just proceed
+        return true;
+      }
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error in duplicate check process:", error);
+    // Allow submission if duplicate check fails
+    return true;
+  }
+};
+
+
+const handleUpvoteDuplicate = async (complaintId) => {
+  try {
+    console.log('handleUpvoteDuplicate called with ID:', complaintId);
+    
+    if (!complaintId) {
+      setError("Invalid complaint ID");
+      return;
+    }
+    
+    setLoading(true);
+    const response = await complaintService.upvoteComplaint(complaintId);
+    console.log('Upvote successful:', response);
+    
+    // Close the modal
+    setShowDuplicateModal(false);
+    
+    // Show success message
+    setSuccess(true);
+    
+    // Navigate after a delay
+    setTimeout(() => {
+      navigate("/home/my-complaints");
+    }, 2000);
+  } catch (error) {
+    console.error("Error upvoting:", error);
+    setError(error.response?.data?.message || "Failed to upvote complaint. Please try again.");
+  } finally {
+    setLoading(false);
+  }
+};
+
+  const handleProceedAnyway = () => {
+    setShowDuplicateModal(false);
+    submitComplaint(true);
+  };
+
+  const submitComplaint = async (skipDuplicateCheck = false) => {
+    setError("");
+
+    try {
+      const token = localStorage.getItem("accessToken");
+      const user = JSON.parse(localStorage.getItem("user"));
+      const userId = user?.id || user?._id;
+      const currentWorkspace = JSON.parse(
+        localStorage.getItem("currentWorkspace"),
+      );
+
+      if (!userId) {
+        setError("User session invalid. Please login again.");
+        setLoading(false);
+        return;
+      }
+
+      if (!currentWorkspace) {
+        setError("Please select a workspace before submitting a complaint");
+        setLoading(false);
+        return;
+      }
+
+      // DEBUG: Log formData to see what's in it
+      console.log("Form Data before submission:", {
+        title: formData.title,
+        description: formData.description,
+        department: formData.department,
+        category: formData.category,
+        location: formData.location,
+      });
+
+      const payload = {
+        title: formData.title,
+        category: formData.category, // This should be the department name
+        description: formData.description,
+        department: formData.department, // This should be the department ID
+        location: {
+          address: formData.location.address || "Location not specified",
+          latitude: formData.location.latitude || null,
+          longitude: formData.location.longitude || null,
+        },
+        userId: userId,
+        adminId: currentWorkspace.id,
+        images: [],
+        skipDuplicateCheck,
+      };
+
+      // Upload images to Cloudinary if provided
+      if (formData.images.length > 0) {
+        try {
+          const imageFormData = new FormData();
+          formData.images.forEach((file) => {
+            imageFormData.append("image", file);
+          });
+          const uploadRes = await axiosInstance.post(`/api/upload`, imageFormData, {
+            headers: {
+              "Content-Type": "multipart/form-data",
+            },
+          });
+          if (uploadRes.data.success && uploadRes.data.urls?.length > 0) {
+            payload.images = uploadRes.data.urls;
+          }
+        } catch (uploadError) {
+          console.error("Image upload failed:", uploadError);
+          // Continue submission even if image upload fails
+        }
+      }
+
+      console.log("Submitting payload:", payload);
+
+      const response = await axiosInstance.post(
+        `/api/user_issues`,
+        payload,
+        {
+          headers: {
+            "Content-Type": "application/json",
+          },
+        },
+      );
+
+      console.log("Response:", response.data);
+
+      if (response.data.success) {
+        setSuccess(true);
+        setTimeout(() => {
+          navigate("/home/my-complaints");
+        }, 2000);
+      } else {
+        setError(response.data.message || "Failed to submit complaint");
+      }
+    } catch (error) {
+      console.error("Error submitting complaint:", error);
+
+      if (error.response?.status === 409 && error.response.data.hasDuplicates) {
+        setDuplicateComplaints(error.response.data.duplicates);
+        setShowDuplicateModal(true);
+      } else if (error.response?.status === 401) {
+        setError("Session expired. Please login again.");
+        localStorage.removeItem("accessToken");
+        localStorage.removeItem("user");
+        setTimeout(() => navigate("/"), 2000);
+      } else {
+        setError(
+          error.response?.data?.message ||
+            "Failed to submit complaint. Please try again.",
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+
+    const currentWorkspace = localStorage.getItem("currentWorkspace");
+    if (!currentWorkspace) {
+      setError("Please select a workspace before submitting a complaint");
+      return;
+    }
+
+    if (!formData.department) {
+      // FIX: Check for department, not category
+      setError("Please select a department");
+      return;
+    }
+
+    setLoading(true);
+
+    const shouldProceed = await checkForDuplicates();
+    if (shouldProceed) {
+      await submitComplaint();
+    }
+    else{
+      setLoading(false);
+    }
+  };
+
+  if (success) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.9 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="text-center"
+        >
+          <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
+            <CheckCircle className="w-10 h-10 text-green-600" />
+          </div>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">
+            Complaint Submitted Successfully!
+          </h2>
+          <p className="text-gray-600 mb-6">
+            Thank you for helping improve your community.
+          </p>
+          <button
+            onClick={() => navigate("/home/my-complaints")}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+          >
+            View My Complaints
+          </button>
+        </motion.div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <button
+          onClick={() => navigate(-1)}
+          className="flex items-center gap-2 text-gray-600 hover:text-gray-900 mb-4"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          Back
+        </button>
+        <h1 className="text-3xl font-bold text-gray-900">
+          Report a Community Issue
+        </h1>
+        <p className="text-gray-600 mt-2">
+          Help improve your community by reporting issues that need attention
+        </p>
+      </div>
+
+      {error && (
+        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-3">
+          <XCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-red-800 font-medium">Submission Error</p>
+            <p className="text-red-600 text-sm">{error}</p>
+          </div>
+        </div>
+      )}
+
+      <DuplicateWarningModal
+        isOpen={showDuplicateModal}
+        onClose={() => setShowDuplicateModal(false)}
+        duplicates={duplicateComplaints}
+        onUpvote={handleUpvoteDuplicate}
+        onProceed={handleProceedAnyway}
+      />
+
+      <form onSubmit={handleSubmit}>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Left Column - Form */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-6">
+              {/* Issue Title */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Issue Title *
+                </label>
+                <input
+                  type="text"
+                  name="title"
+                  value={formData.title}
+                  onChange={handleChange}
+                  required
+                  placeholder="e.g., Pothole on Main Street, Street Light Not Working"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
+                />
+                <p className="text-sm text-gray-500 mt-1">
+                  Be specific and descriptive
+                </p>
+              </div>
+
+              {/* Department Selection */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Department *
+                </label>
+                {departmentsLoading ? (
+                  <div className="flex items-center justify-center py-8 bg-gray-50 rounded-lg border border-gray-200">
+                    <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+                    <span className="ml-3 text-gray-600">
+                      Loading departments...
+                    </span>
+                  </div>
+                ) : departments.length === 0 ? (
+                  <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="text-yellow-800 font-medium">
+                          No Departments Available
+                        </p>
+                        <p className="text-yellow-600 text-sm mt-1">
+                          No departments found. Please contact your
+                          administrator.
+                        </p>
+                        <button
+                          onClick={() => window.location.reload()}
+                          className="mt-3 px-4 py-2 bg-yellow-100 text-yellow-800 rounded-lg hover:bg-yellow-200 transition-colors text-sm font-medium"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <select
+                      name="department"
+                      value={formData.department || ""}
+                      onChange={handleChange}
+                      required
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors bg-white"
+                    >
+                      {departments.map((dept) => (
+                        <option key={dept._id} value={dept._id}>
+                          {dept.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Select the department that should handle this complaint
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {/* Description */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Description *
+                </label>
+                <textarea
+                  name="description"
+                  value={formData.description}
+                  onChange={handleChange}
+                  required
+                  rows={5}
+                  placeholder="Please provide detailed information about the issue..."
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors resize-none"
+                />
+              </div>
+
+              {/* Priority Info */}
+              <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <AlertCircle className="w-4 h-4 text-purple-600" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-gray-900 mb-1">
+                       AI-Powered Priority
+                    </h4>
+                    <p className="text-sm text-gray-700">
+                      Our AI will automatically assign priority based on urgency
+                      and impact.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Location Section with Map */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Location *
+                </label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
+                    <input
+                      type="text"
+                      value={formData.location.address}
+                      onChange={handleLocationChange}
+                      required
+                      placeholder="e.g., Main Street near City Park, Sector 15"
+                      className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-colors"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={getCurrentLocation}
+                    disabled={locationLoading}
+                    className="px-4 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 whitespace-nowrap"
+                  >
+                    {locationLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Getting...
+                      </>
+                    ) : (
+                      <>
+                        <Navigation className="w-4 h-4" />
+                        Use My Location
+                      </>
+                    )}
+                  </button>
+                </div>
+                {formData.location.latitude && formData.location.longitude && (
+                  <p className="text-xs text-green-600 mt-1">
+                    ✓ GPS coordinates: {formData.location.latitude.toFixed(6)},{" "}
+                    {formData.location.longitude.toFixed(6)}
+                  </p>
+                )}
+              </div>
+
+              {/* Map Toggle */}
+              <button
+                type="button"
+                onClick={() => setShowMap(!showMap)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-gray-50 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 transition-colors"
+              >
+                <MapIcon className="w-4 h-4" />
+                {showMap ? "Hide Map" : "Show Map - Select Location Visually"}
+              </button>
+
+              {/* Map Container */}
+              {showMap && (
+                <div className="border border-gray-300 rounded-lg overflow-hidden">
+                  <div
+                    ref={mapRef}
+                    className="w-full"
+                    style={{ height: '384px', zIndex: 0, touchAction: 'none' }}
+                    onWheel={(e) => e.stopPropagation()}
+                  />
+                  <div className="p-3 bg-gray-50 text-sm text-gray-600 flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                    <p>Click on the map to pin the exact location of the issue</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Duplicate Detection Info */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center flex-shrink-0">
+                    <ThumbsUp className="w-4 h-4 text-blue-600" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-gray-900 mb-1">
+                      🔍 Duplicate Detection
+                    </h4>
+                    <p className="text-sm text-gray-700">
+                      We'll check if similar complaints exist nearby (~150
+                      meters). You can upvote existing complaints instead.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column - Image & Submit */}
+          <div className="space-y-6">
+            {/* Image Upload */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <label className="block text-sm font-medium text-gray-700 mb-4">
+                Add Photos (Optional)
+              </label>
+
+              {formData.images.length > 0 && (
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  {formData.images.map((file, index) => (
+                    <div key={index} className="relative group">
+                      <div className="w-full h-20 bg-gray-100 rounded-lg overflow-hidden">
+                        <img
+                          src={URL.createObjectURL(file)}
+                          alt={`Preview ${index + 1}`}
+                          className="w-full h-full object-cover"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => removeImageAt(index)}
+                        className="absolute -top-2 -right-2 bg-red-600 text-white rounded-full p-1 shadow-md hover:bg-red-700 transition-colors"
+                      >
+                        <XCircle className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {formData.images.length < MAX_IMAGES && (
+                <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition-colors cursor-pointer">
+                  <input
+                    type="file"
+                    id="image-upload"
+                    accept="image/*"
+                    multiple
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                  <label htmlFor="image-upload" className="cursor-pointer">
+                    <Camera className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-sm text-gray-600 mb-2">
+                      {formData.images.length > 0
+                        ? "Click to add more photos"
+                        : "Click to upload photos"}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      PNG, JPG up to 5MB each &middot; up to {MAX_IMAGES} photos
+                    </p>
+                  </label>
+                </div>
+              )}
+            </div>
+
+            {/* Submit */}
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-6">
+              <h3 className="font-semibold text-gray-900 mb-4">
+                Ready to Submit
+              </h3>
+
+              <div className="space-y-3 mb-6">
+                <div className="flex items-center gap-3 text-sm text-gray-600">
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  <span>AI will analyze and prioritize</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm text-gray-600">
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  <span>Duplicate detection active</span>
+                </div>
+                <div className="flex items-center gap-3 text-sm text-gray-600">
+                  <CheckCircle className="w-4 h-4 text-green-500" />
+                  <span>Workspace authorities notified</span>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={
+                  loading || departmentsLoading || departments.length === 0
+                }
+                className="w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-cyan-500 text-white rounded-lg hover:opacity-90 transition-opacity font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-4 h-4" />
+                    Submit Complaint
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+};
+
+export default RaiseComplaint;
